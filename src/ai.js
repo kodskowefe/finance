@@ -102,3 +102,7 @@ export async function askAssistant(messages, context) {
 
   return { enabled: true, reply };
 }
+
+export async function askAssistantText(prompt, context) {
+  return askAssistant([{ role: 'user', content: prompt }], context);
+}

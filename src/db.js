@@ -47,6 +47,77 @@ db.exec(`
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
+
+  CREATE TABLE IF NOT EXISTS wallets (
+    id TEXT PRIMARY KEY,
+    plan_id INTEGER,
+    name TEXT NOT NULL,
+    purpose TEXT,
+    amount REAL NOT NULL DEFAULT 0,
+    month TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY(plan_id) REFERENCES plans(id) ON DELETE SET NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS goals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    item_id INTEGER NOT NULL UNIQUE,
+    target_amount REAL NOT NULL DEFAULT 0,
+    saved_amount REAL NOT NULL DEFAULT 0,
+    monthly_contribution REAL NOT NULL DEFAULT 0,
+    deadline TEXT,
+    status TEXT NOT NULL DEFAULT 'active',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY(item_id) REFERENCES items(id) ON DELETE CASCADE
+  );
+
+  CREATE TABLE IF NOT EXISTS goal_contributions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    goal_id INTEGER NOT NULL,
+    plan_id INTEGER,
+    amount REAL NOT NULL DEFAULT 0,
+    date TEXT NOT NULL,
+    note TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY(goal_id) REFERENCES goals(id) ON DELETE CASCADE,
+    FOREIGN KEY(plan_id) REFERENCES plans(id) ON DELETE SET NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS investment_accounts (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    type TEXT NOT NULL DEFAULT 'asset',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS investment_updates (
+    id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL,
+    plan_id INTEGER,
+    amount REAL NOT NULL DEFAULT 0,
+    date TEXT NOT NULL,
+    note TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY(account_id) REFERENCES investment_accounts(id) ON DELETE CASCADE,
+    FOREIGN KEY(plan_id) REFERENCES plans(id) ON DELETE SET NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS allocation_decisions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    plan_id INTEGER,
+    item_id INTEGER NOT NULL,
+    amount REAL NOT NULL DEFAULT 0,
+    scenario TEXT NOT NULL DEFAULT 'manual',
+    source TEXT NOT NULL DEFAULT 'manual',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY(plan_id) REFERENCES plans(id) ON DELETE SET NULL,
+    FOREIGN KEY(item_id) REFERENCES items(id) ON DELETE CASCADE,
+    UNIQUE(plan_id, item_id, source)
+  );
 `);
 
 // ---- Миграция к новой таксономии (band / score_type / scores + новые слои и категории) ----
@@ -169,6 +240,54 @@ export function rowToPlan(r) {
     snapshot: r.snapshot ? JSON.parse(r.snapshot) : null,
     createdAt: r.created_at,
     closedAt: r.closed_at,
+  };
+}
+
+export function rowToWallet(r) {
+  return {
+    id: r.id,
+    planId: r.plan_id,
+    name: r.name,
+    purpose: r.purpose || '',
+    amount: r.amount,
+    month: r.month,
+    createdAt: r.created_at,
+  };
+}
+
+export function rowToGoal(r) {
+  return {
+    id: r.id,
+    itemId: r.item_id,
+    targetAmount: r.target_amount,
+    savedAmount: r.saved_amount,
+    monthlyContribution: r.monthly_contribution,
+    deadline: r.deadline,
+    status: r.status,
+    createdAt: r.created_at,
+  };
+}
+
+export function rowToInvestmentUpdate(r) {
+  return {
+    id: r.id,
+    accountId: r.account_id,
+    name: r.account_name,
+    accountType: r.account_type,
+    amount: r.amount,
+    date: r.date,
+    note: r.note || '',
+    planId: r.plan_id,
+    createdAt: r.created_at,
+  };
+}
+
+export function rowToAllocationDecision(r) {
+  return {
+    itemId: r.item_id,
+    amount: r.amount,
+    scenario: r.scenario,
+    source: r.source,
   };
 }
 

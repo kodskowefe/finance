@@ -33,10 +33,13 @@ const state = {
   investments: [],
   wallets: [],
   manualPlan: [],
+  goals: [],
   view: 'dashboard',
   scenario: 'balanced',
   customInclude: [],
-  queueFilters: { q: '', layer: 'all', type: 'all', status: 'all' },
+  queueFilters: { q: '', layer: 'all', type: 'all', band: 'all', status: 'all' },
+  queueSort: { key: 'priority', dir: 'desc' },
+  whatIf: null,
 };
 
 // ---------- helpers ----------
@@ -229,11 +232,16 @@ function prioDots(p) {
 }
 function goalProgress(item) {
   const cost = Number(item.cost) || 0;
-  const saved = Math.min(cost, Math.max(0, Number(item.savedAmount) || 0));
+  const goal = state.goals.find((g) => g.itemId === item.id);
+  const saved = Math.min(cost, Math.max(0, Number(goal?.savedAmount ?? item.savedAmount) || 0));
+  const monthly = Math.max(0, Number(goal?.monthlyContribution) || 0);
+  const left = Math.max(0, cost - saved);
   return {
     saved,
     cost,
-    left: Math.max(0, cost - saved),
+    left,
+    monthly,
+    monthsLeft: monthly > 0 ? Math.ceil(left / monthly) : null,
     pct: cost > 0 ? Math.min(100, Math.round((saved / cost) * 100)) : 0,
   };
 }
@@ -256,6 +264,30 @@ function manualPlanTotal() {
 }
 function manualAmountFor(itemId) {
   return state.manualPlan.find((p) => p.itemId === itemId)?.amount || 0;
+}
+function sortValue(item, key) {
+  const layer = item.layer || item.bucket;
+  const map = {
+    title: item.title || '',
+    cost: Number(item.cost) || 0,
+    layer: layerLabel(layer),
+    category: catLabelShort(item.category),
+    band: item.band || '',
+    type: item.type || '',
+    priority: Number(item.priority) || 0,
+    deadline: item.deadline || '9999-12-31',
+  };
+  return map[key] ?? '';
+}
+function sortedItems(items) {
+  const { key, dir } = state.queueSort;
+  const mul = dir === 'asc' ? 1 : -1;
+  return [...items].sort((a, b) => {
+    const av = sortValue(a, key);
+    const bv = sortValue(b, key);
+    if (typeof av === 'number' && typeof bv === 'number') return (av - bv) * mul;
+    return String(av).localeCompare(String(bv), 'ru') * mul;
+  });
 }
 
 // ---------- theme ----------
@@ -340,6 +372,7 @@ async function loadAndRender() {
   state.investments = data.investments || [];
   state.wallets = data.wallets || [];
   state.manualPlan = data.manualPlan || [];
+  state.goals = data.goals || [];
   try { state.customInclude = (await api.get('/api/custom-scenario')).includeIds || []; } catch {}
   $('#app').classList.remove('hidden');
   renderTopbar();
@@ -356,6 +389,7 @@ async function refresh() {
   state.investments = data.investments || [];
   state.wallets = data.wallets || [];
   state.manualPlan = data.manualPlan || [];
+  state.goals = data.goals || [];
   renderTopbar();
   renderView();
 }
@@ -386,6 +420,8 @@ async function doLogout() {
 }
 
 $('#editPlanBtn').addEventListener('click', openPlanModal);
+$('#dataBtn').addEventListener('click', openDataModal);
+$('#fabAdd')?.addEventListener('click', openQuickItemModal);
 
 function renderView() {
   const root = $('#views');
@@ -419,6 +455,12 @@ function viewDashboard() {
     return `<div class="view-head"><h1>Кабинет</h1><p>Обзор будущей зарплаты до её прихода.</p></div>${noPlanBlock()}`;
   }
   const t = state.allocation.totals;
+  const deadlines = state.items
+    .filter((it) => it.deadline)
+    .sort((a, b) => a.deadline.localeCompare(b.deadline))
+    .slice(0, 3);
+  const whatSalary = state.whatIf?.plan?.salary ?? state.plan.salary;
+  const whatTotals = state.whatIf?.allocation?.totals;
   const stablePct = (value) => (t.salary ? (value / t.salary) * 100 : 0);
   const segs = Object.entries(state.allocation.buckets)
     .filter(([, v]) => v > 0)
@@ -427,6 +469,18 @@ function viewDashboard() {
 
   return `
   <div class="view-head"><h1>Кабинет</h1><p>Как разложить зарплату заранее — до того, как деньги пришли.</p></div>
+  <div class="chart-cols" style="margin-bottom:16px">
+    <div class="card pad-lg">
+      <div class="row-between"><div><div class="stat-label">Что-если зарплата</div><p class="muted small" style="margin:4px 0 0">Двигается без записи в БД, можно применить.</p></div><b>${fmt(whatSalary)}</b></div>
+      <input id="whatIfSalary" type="range" min="${Math.round(state.plan.salary * 0.6)}" max="${Math.round(state.plan.salary * 1.4)}" value="${whatSalary}" step="500" style="width:100%;margin-top:12px">
+      <div class="row-between small muted"><span>Излишки: ${fmt(whatTotals?.availableToAllocate ?? t.availableToAllocate)}</span><span>Останется: ${fmt(whatTotals?.remaining ?? t.remaining)}</span></div>
+      <button class="btn btn-outline btn-sm" data-act="apply-whatif" style="margin-top:10px">Применить зарплату</button>
+    </div>
+    <div class="card pad-lg">
+      <div class="row-between"><div class="stat-label">Совет от AI</div><button class="btn btn-sm btn-ghost" data-act="ai-tip">Обновить</button></div>
+      <div id="aiTipBox" class="muted small">Нажмите «Обновить», чтобы получить короткий совет по плану.</div>
+    </div>
+  </div>
   <div class="grid cards">
     <div class="card"><div class="stat-label">Зарплата</div><div class="stat-value">${fmt(t.salary)}</div><div class="stat-sub">${fmtDate(state.plan.payday)}</div></div>
     <div class="card"><div class="stat-label">Обязательные расходы</div><div class="stat-value sm">${fmt(t.survival)}</div><div class="stat-sub">стабильный расходник</div></div>
@@ -436,6 +490,8 @@ function viewDashboard() {
     <div class="card"><div class="stat-label">Распределено</div><div class="stat-value sm">${fmt(t.allocated)}</div><div class="stat-sub">${state.allocation.approved.length} покупок одобрено</div></div>
     <div class="card"><div class="stat-label">Останется из излишков</div><div class="stat-value ${t.remaining < 0 ? 'red-num' : 'green-num'}">${fmt(t.remaining)}</div></div>
   </div>
+
+  ${deadlines.length ? `<div class="card pad-lg" style="margin-top:16px"><div class="section-title" style="margin-top:0">Ближайшие дедлайны</div>${deadlines.map((it) => `<div class="wallet-row"><div><b>${escapeHtml(it.title)}</b><div class="muted small">${fmtDate(it.deadline)} · ${fmt(it.cost)}</div></div><span class="tag tag-${it.type}">${TYPE_LABELS[it.type]}</span></div>`).join('')}</div>` : ''}
 
   <div class="chart-cols" style="margin-top:16px">
     <div class="card pad-lg">
@@ -483,7 +539,7 @@ function verdictChip(item) {
 function queueItemRow(item, extra = '', reason = '') {
   const layer = item.layer || item.bucket;
   const gp = goalProgress(item);
-  return `<div class="queue-item">
+  return `<div class="queue-item queue-swipe" data-id="${item.id}">
     <div class="qi-main">
       <div class="qi-title"><span class="dot" style="background:${layerColor(layer)}"></span>${escapeHtml(item.title)}
         <span class="tag tag-${item.type}">${TYPE_LABELS[item.type]}</span>${verdictChip(item)}</div>
@@ -504,13 +560,16 @@ function viewQueue() {
     const textOk = !q.q || `${it.title} ${it.notes || ''}`.toLowerCase().includes(q.q.toLowerCase());
     const layerOk = q.layer === 'all' || (it.layer || it.bucket) === q.layer;
     const typeOk = q.type === 'all' || it.type === q.type;
+    const bandOk = q.band === 'all' || it.band === q.band;
     const statusOk = q.status === 'all'
       || (q.status === 'funded' && gp.saved > 0 && gp.pct < 100)
       || (q.status === 'complete' && gp.pct >= 100)
       || (q.status === 'planned' && inPlan);
-    return textOk && layerOk && typeOk && statusOk;
+    return textOk && layerOk && typeOk && bandOk && statusOk;
   });
-  const rows = filtered.map((it) => {
+  const sortMark = (key) => state.queueSort.key === key ? (state.queueSort.dir === 'asc' ? ' ↑' : ' ↓') : '';
+  const th = (key, label) => `<th><button class="th-sort" data-sort="${key}">${label}${sortMark(key)}</button></th>`;
+  const rows = sortedItems(filtered).map((it) => {
     const inPlan = state.allocation?.approved.some((a) => a.item.id === it.id);
     const layer = it.layer || it.bucket;
     const gp = goalProgress(it);
@@ -527,9 +586,11 @@ function viewQueue() {
       <td>${inPlan ? '<span class="green-num">в плане</span>' : '<span class="muted">позже</span>'}</td>
       <td style="text-align:right">
         <button class="btn btn-sm btn-ghost" data-act="tradeoff" data-id="${it.id}">Trade-off</button>
+        <button class="btn btn-sm btn-ghost" data-act="ai-explain" data-id="${it.id}">✦ почему</button>
         <button class="btn btn-sm btn-outline" data-act="save-goal" data-id="${it.id}">Копить</button>
         <button class="btn btn-sm btn-outline" data-act="edit" data-id="${it.id}">✎</button>
         <button class="btn btn-sm btn-ghost" data-act="bought" data-id="${it.id}" title="Отметить купленным">✓</button>
+        <button class="btn btn-sm btn-danger" data-act="delete" data-id="${it.id}" title="Удалить">×</button>
       </td>
     </tr>`;
   }).join('');
@@ -539,18 +600,27 @@ function viewQueue() {
     <div><h1>Очередь желаний</h1><p>Единый список желаний — переносится из месяца в месяц. Купленное архивируется.</p></div>
     <button class="btn btn-primary" data-act="add-item">+ Добавить желание</button>
   </div>
+  <form class="quick-add card" id="quickAddForm">
+    <input name="title" placeholder="Быстро добавить желание..." required />
+    <input name="cost" type="number" min="0" placeholder="Сумма" required />
+    <select name="type"><option value="should">Should</option><option value="must">Must</option><option value="nice">Nice</option></select>
+    <button class="btn btn-primary" type="submit">Добавить</button>
+  </form>
   <div class="filters card">
     <input data-filter="q" placeholder="Поиск по желаниям..." value="${escapeAttr(q.q)}" />
     <select data-filter="layer"><option value="all">Все слои</option>${Object.entries(state.meta.layers).map(([k, v]) => `<option value="${k}" ${q.layer === k ? 'selected' : ''}>${v.ru}</option>`).join('')}</select>
     <select data-filter="type"><option value="all">Все типы</option>${Object.entries(TYPE_LABELS).map(([k, v]) => `<option value="${k}" ${q.type === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
+    <select data-filter="band"><option value="all">Все размеры</option>${state.meta.bands.map((b) => `<option value="${b.id}" ${q.band === b.id ? 'selected' : ''}>${b.label}</option>`).join('')}</select>
     <select data-filter="status">${Object.entries(queueStatusLabel).map(([k, v]) => `<option value="${k}" ${q.status === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
+    <select id="mobileSort" class="mobile-sort"><option value="priority:desc">Сорт: приоритет ↓</option><option value="cost:desc">Стоимость ↓</option><option value="cost:asc">Стоимость ↑</option><option value="deadline:asc">Дедлайн ↑</option><option value="title:asc">Название ↑</option></select>
   </div>
-  ${state.items.length && filtered.length ? `<div class="table-wrap"><table>
-    <thead><tr><th>Желание</th><th>Стоимость</th><th>Накоплено</th><th>Слой</th><th>Категория</th><th>Band</th><th>Тип</th><th>Приоритет</th><th>Дедлайн</th><th>Статус</th><th></th></tr></thead>
+  ${state.items.length && filtered.length ? `<div class="table-wrap queue-table"><table>
+    <thead><tr>${th('title', 'Желание')}${th('cost', 'Стоимость')}<th>Накоплено</th>${th('layer', 'Слой')}${th('category', 'Категория')}${th('band', 'Band')}${th('type', 'Тип')}${th('priority', 'Приоритет')}${th('deadline', 'Дедлайн')}<th>Статус</th><th></th></tr></thead>
     <tbody>${rows}</tbody></table></div>`
     : `<div class="empty"><div class="big">≡</div><p>Очередь пуста. Добавьте первое желание.</p>
        <button class="btn btn-primary" data-act="add-item">+ Добавить желание</button></div>`}
   ${state.items.length && !filtered.length ? '<div class="empty"><p>По фильтрам ничего не найдено.</p></div>' : ''}
+  <div class="mobile-queue">${sortedItems(filtered).map((it) => queueItemRow(it, 'Свайп влево — куплено, вправо — удалить')).join('')}</div>
   <div id="tradeoffBox"></div>`;
 }
 
@@ -650,6 +720,15 @@ function viewPlan() {
 
 function viewScenarios() {
   if (!state.scenarios.length) return `<div class="view-head"><h1>Сценарии</h1></div>${noPlanBlock()}`;
+  const compareRows = [
+    ['Карьера', (s) => fmtShort(s.career)],
+    ['Жизнь', (s) => fmtShort(s.quality)],
+    ['Буфер', (s) => fmtShort(s.reserve)],
+    ['Распределено', (s) => fmtShort(s.allocated)],
+    ['Останется', (s) => fmtShort(s.remaining)],
+    ['Одобрено', (s) => s.includedCount],
+    ['Отложено', (s) => s.excludedCount],
+  ];
   const cards = state.scenarios.map((s) => {
     const total = state.allocation?.totals?.availableToAllocate || (s.allocated + s.remaining || 1);
     const bars = Object.entries(s.buckets).filter(([, v]) => v > 0)
@@ -677,6 +756,9 @@ function viewScenarios() {
   return `
   <div class="view-head"><h1>Сценарии месяца</h1><p>Сравнение стратегий по излишкам после стабильных пунктов: обязательные расходы, страховка и инвестиции уже вычтены из зарплаты.</p></div>
   <div class="grid scn-grid">${cards}</div>
+  <div class="section-title">Сравнение бок о бок</div>
+  <div class="table-wrap"><table class="scenario-compare"><thead><tr><th>Метрика</th>${state.scenarios.map((s) => `<th>${escapeHtml(s.label)}</th>`).join('')}</tr></thead>
+    <tbody>${compareRows.map(([label, fn]) => `<tr><td><b>${label}</b></td>${state.scenarios.map((s) => `<td>${fn(s)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>
   ${state.scenario === 'custom' ? customScenarioEditor() : ''}`;
 }
 
@@ -749,9 +831,25 @@ async function sendChat(e) {
   log.innerHTML += `<div class="msg user">${escapeHtml(text)}</div><div class="msg bot" id="pending">…</div>`;
   log.scrollTop = log.scrollHeight;
   try {
-    const out = await api.post('/api/ai/chat', { messages: chatHistory });
-    chatHistory.push({ role: 'assistant', content: out.reply });
-    $('#pending').outerHTML = `<div class="msg bot">${escapeHtml(out.reply)}</div>`;
+    const res = await fetch('/api/ai/chat/stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messages: chatHistory }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    const pending = $('#pending');
+    let reply = '';
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      reply += dec.decode(value, { stream: true });
+      pending.textContent = reply;
+      log.scrollTop = log.scrollHeight;
+    }
+    chatHistory.push({ role: 'assistant', content: reply });
+    pending.removeAttribute('id');
   } catch (ex) {
     $('#pending').outerHTML = `<div class="msg bot">Ошибка ассистента: ${escapeHtml(ex.message)}</div>`;
   }
@@ -778,7 +876,24 @@ function bindViewEvents() {
       else if (act === 'tradeoff') await showTradeoff(id);
       else if (act === 'close-month') closeMonth();
       else if (act === 'pick-scenario') pickScenario(el.dataset.key);
+      else if (act === 'ai-explain') await explainItem(id);
+      else if (act === 'ai-tip') await loadAiTip();
+      else if (act === 'apply-whatif') await applyWhatIf();
+      else if (act === 'delete') await deleteItem(id);
     });
+  });
+  $$('.queue-swipe').forEach((row) => bindSwipe(row));
+  $('#whatIfSalary')?.addEventListener('input', updateWhatIf);
+  $('#quickAddForm')?.addEventListener('submit', quickAddItem);
+  $$('.th-sort').forEach((btn) => btn.addEventListener('click', () => {
+    const key = btn.dataset.sort;
+    state.queueSort = { key, dir: state.queueSort.key === key && state.queueSort.dir === 'desc' ? 'asc' : 'desc' };
+    renderView();
+  }));
+  $('#mobileSort')?.addEventListener('change', (e) => {
+    const [key, dir] = e.target.value.split(':');
+    state.queueSort = { key, dir };
+    renderView();
   });
   $$('[data-cust]').forEach((cb) => cb.addEventListener('change', saveCustomScenario));
   $$('[data-filter]').forEach((el) => el.addEventListener('input', () => {
@@ -787,10 +902,99 @@ function bindViewEvents() {
   }));
 }
 
+async function quickAddItem(e) {
+  e.preventDefault();
+  const f = new FormData(e.currentTarget);
+  await api.post('/api/items', {
+    title: f.get('title'),
+    cost: +f.get('cost'),
+    type: f.get('type'),
+    category: 'lifestyle',
+    priority: 3,
+    emotional: 3,
+    trajectory: 3,
+    canDefer: true,
+    scoreType: 'none',
+  });
+  toast('Желание добавлено');
+  await refresh();
+}
+
+async function updateWhatIf(e) {
+  const salary = +e.target.value;
+  state.whatIf = await api.post('/api/whatif', { salary, scenario: state.scenario });
+  renderView();
+}
+
+async function applyWhatIf() {
+  if (!state.whatIf?.plan) return;
+  const p = state.whatIf.plan;
+  await api.post('/api/plan', {
+    name: p.name,
+    payday: p.payday,
+    salary: p.salary,
+    survivalCost: p.survivalCost,
+    buffer: p.buffer,
+    investmentFixed: p.investmentFixed,
+  });
+  state.whatIf = null;
+  toast('Зарплата применена');
+  await refresh();
+}
+
+async function loadAiTip() {
+  const box = $('#aiTipBox');
+  box.textContent = 'AI думает…';
+  try {
+    const out = await api.get(`/api/ai/tip?scenario=${state.scenario}`);
+    box.textContent = out.reply || 'Нет ответа.';
+  } catch (ex) {
+    box.textContent = 'AI недоступен: ' + ex.message;
+  }
+}
+
+async function exportData() {
+  const data = await api.get('/api/export');
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `capital-queue-${new Date().toISOString().slice(0, 10)}.json`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+async function importData(e) {
+  const file = e.target.files?.[0];
+  if (!file) return;
+  const data = JSON.parse(await file.text());
+  await api.post('/api/import', data);
+  closeModal();
+  toast('Импортировано');
+  await refresh();
+}
+
 async function markBought(id) {
   await api.post(`/api/items/${id}/status`, { status: 'bought' });
   toast('Отмечено как купленное');
   await refresh();
+}
+
+async function deleteItem(id) {
+  if (!confirm('Удалить желание?')) return;
+  await api.del(`/api/items/${id}`);
+  toast('Удалено');
+  await refresh();
+}
+
+function bindSwipe(row) {
+  let startX = 0;
+  row.addEventListener('touchstart', (e) => { startX = e.touches[0].clientX; }, { passive: true });
+  row.addEventListener('touchend', async (e) => {
+    const dx = e.changedTouches[0].clientX - startX;
+    if (Math.abs(dx) < 80) return;
+    if (dx < 0) await markBought(Number(row.dataset.id));
+    else await deleteItem(Number(row.dataset.id));
+  }, { passive: true });
 }
 
 async function showTradeoff(id) {
@@ -806,6 +1010,18 @@ async function showTradeoff(id) {
     if (t.displaces?.length) html += `<br>Это вытеснит: ${t.displaces.map((d) => escapeHtml(d.title)).join(', ')}.`;
   }
   box.innerHTML = `<div class="tradeoff">${html}</div>`;
+  box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+async function explainItem(id) {
+  const box = $('#tradeoffBox');
+  box.innerHTML = '<div class="tradeoff">AI думает…</div>';
+  try {
+    const out = await api.post('/api/ai/explain', { itemId: id, scenario: state.scenario });
+    box.innerHTML = `<div class="tradeoff"><b>Почему так:</b><br>${escapeHtml(out.reply)}</div>`;
+  } catch (ex) {
+    box.innerHTML = `<div class="tradeoff">AI недоступен: ${escapeHtml(ex.message)}</div>`;
+  }
   box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
@@ -825,6 +1041,7 @@ async function closeMonth() {
 
 async function pickScenario(key) {
   state.scenario = key;
+  state.whatIf = null;
   await refresh();
 }
 
@@ -843,6 +1060,38 @@ function openModal(html) {
   $('#ov').addEventListener('click', (e) => { if (e.target.id === 'ov') closeModal(); });
 }
 function closeModal() { $('#modalRoot').innerHTML = ''; }
+
+function openQuickItemModal() {
+  openModal(`<div class="modal narrow">
+    <div class="modal-head"><h2>Быстро добавить желание</h2><button class="close-x" onclick="document.getElementById('modalRoot').innerHTML=''">×</button></div>
+    <form id="quickItemForm" class="form-grid">
+      <div class="field full"><label>Название</label><input name="title" required /></div>
+      <div class="field"><label>Сумма</label><input name="cost" type="number" min="0" required /></div>
+      <div class="field"><label>Тип</label><select name="type"><option value="should">Should</option><option value="must">Must</option><option value="nice">Nice</option></select></div>
+      <div class="modal-foot field full" style="flex-direction:row"><button type="button" class="btn btn-ghost" onclick="document.getElementById('modalRoot').innerHTML=''">Отмена</button><button class="btn btn-primary">Добавить</button></div>
+    </form></div>`);
+  $('#quickItemForm').addEventListener('submit', quickAddItem);
+}
+
+function openDataModal() {
+  const goalRows = state.items.map((it) => {
+    const gp = goalProgress(it);
+    return `<div class="wallet-row"><div><b>${escapeHtml(it.title)}</b><div class="muted small">${fmt(gp.saved)} / ${fmt(gp.cost)}${gp.monthsLeft ? ` · ~${gp.monthsLeft} мес.` : ''}</div></div>
+      <button class="btn btn-sm btn-outline" data-act="save-goal" data-id="${it.id}">Цель</button></div>`;
+  }).join('');
+  openModal(`<div class="modal">
+    <div class="modal-head"><h2>Данные и цели</h2><button class="close-x" onclick="document.getElementById('modalRoot').innerHTML=''">×</button></div>
+    <div class="grid cards">
+      <button class="btn btn-primary" id="exportBtn" type="button">Экспорт JSON</button>
+      <label class="btn btn-outline" style="text-align:center">Импорт JSON<input id="importFile" type="file" accept="application/json" hidden></label>
+    </div>
+    <div class="section-title">Цели-накопления</div>
+    <div>${goalRows || '<p class="muted">Пока нет желаний.</p>'}</div>
+  </div>`);
+  $('#exportBtn').addEventListener('click', exportData);
+  $('#importFile').addEventListener('change', importData);
+  bindViewEvents();
+}
 
 function openPlanModal() {
   const p = state.plan || { name: 'Зарплата', payday: new Date().toISOString().slice(0, 10), ...state.meta.defaults };
@@ -886,6 +1135,7 @@ function openSavingsModal(item) {
       <div class="field full"><label>Желание</label><input value="${escapeAttr(item.title)}" disabled /></div>
       <div class="field"><label>Цена</label><input value="${fmt(item.cost)}" disabled /></div>
       <div class="field"><label>Уже накоплено, грн</label><input type="number" name="savedAmount" min="0" value="${gp.saved}" /></div>
+      <div class="field"><label>Откладывать в месяц, грн</label><input type="number" name="monthlyContribution" min="0" value="${gp.monthly || 0}" /></div>
       <div class="field full"><div class="goal-mini big"><div style="width:${gp.pct}%"></div></div><span class="muted small">${gp.pct}% · осталось ${fmt(gp.left)}</span></div>
       <div class="modal-foot field full" style="flex-direction:row">
         <button type="button" class="btn btn-ghost" onclick="document.getElementById('modalRoot').innerHTML=''">Отмена</button>
@@ -895,7 +1145,7 @@ function openSavingsModal(item) {
   $('#savingsForm').addEventListener('submit', async (e) => {
     e.preventDefault();
     const f = new FormData(e.currentTarget);
-    await api.post(`/api/items/${item.id}/savings`, { savedAmount: +f.get('savedAmount') });
+    await api.post(`/api/items/${item.id}/savings`, { savedAmount: +f.get('savedAmount'), monthlyContribution: +f.get('monthlyContribution') });
     closeModal(); toast('Накопление обновлено'); await refresh();
   });
 }
@@ -1087,5 +1337,20 @@ function escapeHtml(s) {
   return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 function escapeAttr(s) { return escapeHtml(s).replace(/"/g, '&quot;'); }
+
+let deferredInstallPrompt = null;
+window.addEventListener('beforeinstallprompt', (event) => {
+  event.preventDefault();
+  deferredInstallPrompt = event;
+  $('#installBtn')?.classList.remove('hidden');
+});
+$('#installBtn')?.addEventListener('click', async () => {
+  if (!deferredInstallPrompt) return;
+  deferredInstallPrompt.prompt();
+  await deferredInstallPrompt.userChoice;
+  deferredInstallPrompt = null;
+  $('#installBtn')?.classList.add('hidden');
+});
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
 
 bootstrap().catch((e) => console.error(e));

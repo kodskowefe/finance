@@ -4,8 +4,13 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <meta name="theme-color" content="#ffffff" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-title" content="Capital Queue" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   <title>Capital Queue — план зарплаты</title>
   <link rel="icon" href="/logo.svg" type="image/svg+xml" />
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <link rel="apple-touch-icon" href="/icon-192.png" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
@@ -116,12 +121,15 @@
             </a>
           </div>
           <span id="topStatus" class="status-badge">—</span>
+          <button id="installBtn" class="icon-btn hidden" title="Установить приложение" type="button">⤓</button>
+          <button id="dataBtn" class="icon-btn" title="Данные и цели" type="button">⚙</button>
           <button id="themeBtn" class="icon-btn" title="Сменить тему" type="button">◐</button>
           <button id="editPlanBtn" class="btn btn-primary">Настроить</button>
         </div>
       </header>
 
       <div id="views" class="views"></div>
+      <button class="fab mobile-only" id="fabAdd" type="button" aria-label="Быстро добавить желание">+</button>
 
       <nav class="bottom-nav">
         <button class="nav-item active" data-view="dashboard"><span class="ico">◎</span><span class="lbl">Кабинет</span></button>

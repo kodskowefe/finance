@@ -5,12 +5,32 @@ import { LAYERS, SCORE_CRITERIA } from './categories.js';
 
 const TYPE_WEIGHT = { must: 1000, should: 500, nice: 0 };
 
-// Сценарии меняют веса ранжирования, целевой резерв и доли по слоям.
+// Сценарии — политики распределения излишка после стабильных пунктов.
 export const SCENARIOS = {
-  balanced: { label: 'Сбалансированный', reserveMultiplier: 1, boost: {}, weights: { stability: 25, career: 25, investment: 20, quality: 25, leakage: 5 } },
-  save_more: { label: 'Больше копить', reserveMultiplier: 1.35, boost: { stability: 280, investment: 300 }, weights: { stability: 30, career: 15, investment: 35, quality: 15, leakage: 5 } },
-  career: { label: 'Карьерный капитал', reserveMultiplier: 1, boost: { career: 450, investment: 120 }, weights: { stability: 18, career: 45, investment: 20, quality: 12, leakage: 5 } },
-  enjoy: { label: 'Наслаждаться жизнью', reserveMultiplier: 0.8, boost: { quality: 350 }, weights: { stability: 15, career: 15, investment: 15, quality: 50, leakage: 5 } },
+  balanced: {
+    label: 'Сбалансированный',
+    reserveMultiplier: 1,
+    boost: {},
+    weights: { stability: 25, career: 25, investment: 20, quality: 25, leakage: 5 },
+  },
+  save_more: {
+    label: 'Безопасный',
+    reserveMultiplier: 1.35,
+    boost: { stability: 180, investment: 150 },
+    weights: { stability: 35, career: 15, investment: 30, quality: 15, leakage: 5 },
+  },
+  career: {
+    label: 'Рост / карьера',
+    reserveMultiplier: 1,
+    boost: { career: 300, investment: 120 },
+    weights: { stability: 15, career: 45, investment: 25, quality: 10, leakage: 5 },
+  },
+  enjoy: {
+    label: 'Жить сейчас',
+    reserveMultiplier: 0.8,
+    boost: { quality: 220 },
+    weights: { stability: 10, career: 15, investment: 15, quality: 55, leakage: 5 },
+  },
   custom: { label: 'Свой сценарий', reserveMultiplier: 1, boost: {}, weights: null },
 };
 
@@ -78,6 +98,14 @@ function emptyBuckets() {
   return Object.fromEntries(Object.keys(LAYERS).map((k) => [k, 0]));
 }
 
+function policyTargets(available, weights) {
+  if (!weights) return null;
+  const totalWeight = Object.values(weights).reduce((sum, value) => sum + Number(value || 0), 0) || 1;
+  return Object.fromEntries(
+    Object.keys(LAYERS).map((layer) => [layer, Math.round(available * (Number(weights[layer] || 0) / totalWeight))])
+  );
+}
+
 /**
  * Построить план распределения.
  * @param {{payday:string, salary:number, survivalCost:number, buffer:number, investmentFixed:number}} plan
@@ -105,6 +133,7 @@ export function allocate(plan, items, options = {}) {
   const approved = [];
   const deferred = [];
   const buckets = emptyBuckets();
+  const targets = scenarioKey === 'custom' ? null : policyTargets(availableToAllocate, scenario.weights);
   let spent = 0;
   let mustDeferredForMoney = false;
 
@@ -115,8 +144,13 @@ export function allocate(plan, items, options = {}) {
       continue;
     }
 
-    const fits = item.cost <= availableToAllocate - spent;
-    if (fits) {
+    const remainingBudget = availableToAllocate - spent;
+    const layerSpent = buckets[item.layer] || 0;
+    const layerTarget = targets?.[item.layer] ?? availableToAllocate;
+    const protectedItem = item.type === 'must' || !item.canDefer;
+    const fits = item.cost <= remainingBudget;
+    const fitsPolicy = !targets || protectedItem || layerSpent + item.cost <= layerTarget;
+    if (fits && fitsPolicy) {
       approved.push({ item, balanceAfter: salary - stableExpenses - (spent + item.cost) });
       spent += item.cost;
       buckets[item.layer] = (buckets[item.layer] || 0) + item.cost;
@@ -125,6 +159,8 @@ export function allocate(plan, items, options = {}) {
       deferred.push({ item, reason: 'Не хватает бюджета даже на обязательную покупку' });
     } else if (!item.canDefer) {
       deferred.push({ item, reason: 'Не помещается, хотя помечено как неоткладываемое — нужно увеличить бюджет' });
+    } else if (!fitsPolicy) {
+      deferred.push({ item, reason: `Не проходит политику сценария: лимит слоя «${LAYERS[item.layer]?.ru || item.layer}»` });
     } else {
       deferred.push({ item, reason: 'Не помещается в излишки после стабильных пунктов — перенесено на потом' });
     }
@@ -174,6 +210,7 @@ export function allocate(plan, items, options = {}) {
       status,
     },
     weights: scenario.weights,
+    policyTargets: targets,
     buckets,
     approved,
     deferred,
@@ -255,6 +292,7 @@ export function scenarioSummaries(plan, items, customIncludeIds = null) {
       allocated: r.totals.allocated,
       remaining: r.totals.remaining,
       weights: r.weights,
+      policyTargets: r.policyTargets,
       status: r.totals.status,
       includedCount: r.approved.length,
       excludedCount: r.deferred.length,
